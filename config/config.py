@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
+from functools import lru_cache
 
 class Config(BaseSettings):
     #Telegram Bot Token
@@ -22,4 +23,6 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-settings = Config()
+@lru_cache()
+def get_settings():
+    return Config()
