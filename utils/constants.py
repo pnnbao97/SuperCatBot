@@ -16,21 +16,13 @@ class WebhookConfig:
 
 # Bot Messages
 class BotMessages:
-    WELCOME: Final[str] = (
-        "🐱 Welcome to SuperCat Bot!\n\n"
-        "Available commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show help message"
-    )
     
     HELP: Final[str] = (
-        "Need help? Here's what I can do:\n\n"
-        "• Send me any message\n"
-        "• Use /start to begin\n"
-        "• Use /help to see this message"
+        "Mày ngu vl, để tao nhắc lại mấy câu lệnh cơ bản cho mày\n"
+        "/help - Nhắc lại mấy câu lệnh cơ bản\n"
     )
     
-    ECHO_PREFIX: Final[str] = "You said: "
+    ECHO_PREFIX: Final[str] = "Mày nói: "
 
 # Log Messages
 class LogMessages:

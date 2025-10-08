@@ -5,12 +5,14 @@ from config.config import get_settings
 from contextlib import asynccontextmanager
 import logging
 import uvicorn
+from utils.export_api_key import export_api_key
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot_application = None
 settings = get_settings()
+export_api_key()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,7 +20,6 @@ async def lifespan(app: FastAPI):
     Lifespan for the FastAPI application.
     """
     global bot_application
-
     # Start the bot
     logger.info("Starting Supercat...")
 
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("🎉 Supercat started")
 
+
     yield
 
     # Stop the bot
@@ -69,8 +71,13 @@ async def webhook(request: Request):
     
     try:
         data = await request.json()
+        if data['message']['chat']['id'] not in settings.allowed_chat_ids:
+            logger.info(f"📨 Received update from unauthorized chat: {data['message']['chat']['id']}")
+            return {'ok': True}
+        
         update_id = data.get('update_id', 'unknown')
         logger.info(f"📨 Received update: {update_id}")
+        logger.info(f"📨 Data: {data}")
         
         await bot_application.process_update(
             Update.de_json(data, bot_application.bot)
