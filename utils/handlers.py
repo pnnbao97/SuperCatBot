@@ -16,7 +16,6 @@ import os
 
 logger = logging.getLogger(__name__)
 
-orchestration_agent = OrchestratorAgent()
 
 class BotHandlers:
     """Bot command and message handlers."""
@@ -36,19 +35,14 @@ class BotHandlers:
         """Handle text messages with status updates."""
         try:
             message = update.message.text
-            
+            chat_id = update.message.chat_id
+            user_name = update.effective_user.last_name
+            message = f"Đây là câu hỏi của {user_name}: {message}"
+
+            orchestration_agent = OrchestratorAgent(chat_id)
+
             # Gửi tin nhắn placeholder ban đầu
             status_message = await update.message.reply_text("⏳ Đang xử lý...")
-            
-            # Định nghĩa callback để update status
-            # async def update_status(status: str):
-            #     try:
-            #         if status == "searching":
-            #             await status_message.edit_text("🔍 Đang tìm kiếm thông tin...")
-            #         elif status == "answering":
-            #             await status_message.edit_text("💭 Đang tổng hợp câu trả lời...")
-            #     except Exception as e:
-            #         logger.warning(f"Failed to update status: {e}")
             
             # Generate answer với callback
             response = await orchestration_agent.generate_answer(message)

@@ -10,3 +10,5 @@ def limit_messages(existing: list[BaseMessage], new: list[BaseMessage]) -> list[
     
 class State(TypedDict):
     messages: Annotated[list[BaseMessage], limit_messages]
+    next_agent: str
+    agent_instructions: str
