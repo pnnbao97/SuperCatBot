@@ -11,7 +11,8 @@ from telegram.ext import (
 import logging
 from utils.constants import BotMessages, LogMessages
 from utils.exceptions import HandlerError
-from agents.orchestration import OrchestratorAgent
+from agents.orchestrator import OrchestratorAgent
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,29 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Error in photo message: {e}")
             raise HandlerError(f"Failed to handle photo message: {e}")
+    
+    @staticmethod
+    async def video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle video messages."""
+        try:
+            caption = update.message.caption
+            if not caption or not caption.startswith("/sc"):
+                return
+            chat_id = update.message.chat_id
+            video_file_id = update.message.video.file_id
+            video_file = await context.bot.get_file(video_file_id)
+            
+            # Tạo thư mục videos nếu không tồn tại
+            os.makedirs("videos", exist_ok=True)
+            # Tải video về
+            video_path = f"videos/{video_file_id}.mp4"
+            await video_file.download_to_drive(video_path)
+
+            # Gửi lại video
+            await context.bot.send_video(chat_id=chat_id, video=video_file_id, caption=caption)
+        except Exception as e:
+            logger.error(f"Error in video message: {e}")
+            raise HandlerError(f"Failed to handle video message: {e}")
 
     @staticmethod
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -120,7 +144,7 @@ def setup_handlers(application) -> None:
 
         application.add_handler(MessageHandler(filters.PHOTO, BotHandlers.photo_message))
 
-        # application.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, BotHandlers.video_message))
+        application.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, BotHandlers.video_message))
 
         # application.add_handler(MessageHandler(filters.DOCUMENT, BotHandlers.document_message))
 
