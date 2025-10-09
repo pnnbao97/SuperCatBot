@@ -1,7 +1,6 @@
 import json
-from typing import Annotated, Literal
+from typing import Annotated
 from typing_extensions import TypedDict
-from dataclasses import dataclass
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
@@ -13,15 +12,23 @@ from langgraph.checkpoint.memory import InMemorySaver
 from datetime import datetime
 
 from config.config import get_settings
+import logging
 
 settings = get_settings()
 current_date = datetime.now().strftime("%d/%m/%Y")
+logger = logging.getLogger(__name__)
 
 # ==========================
 # STATE
 # ==========================
+def limit_messages(existing: list[BaseMessage], new: list[BaseMessage]) -> list[BaseMessage]:
+    """Giữ tối đa N messages gần nhất"""
+    MAX_MESSAGES = 15
+    combined = existing + new
+    return combined[-MAX_MESSAGES:]
+    
 class State(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
+    messages: Annotated[list[BaseMessage], limit_messages]
     need_search: bool
     search_count: int
 
@@ -49,10 +56,6 @@ memory = InMemorySaver()
 # ==========================
 # HELPER FUNCTIONS
 # ==========================
-def get_recent_messages(messages: list[BaseMessage], max_count: int = 10) -> list[BaseMessage]:
-    """Lấy N messages gần nhất"""
-    return messages[-max_count:] if len(messages) > max_count else messages
-
 def extract_sources_from_tool_results(tool_messages: list[ToolMessage]) -> list[dict]:
     """Parse Tavily results thành list sources với URL"""
     sources = []
@@ -60,18 +63,9 @@ def extract_sources_from_tool_results(tool_messages: list[ToolMessage]) -> list[
     
     for tool_msg in tool_messages:
         try:
-            # Parse content
-            if isinstance(tool_msg.content, str):
-                results = json.loads(tool_msg.content)
-            else:
-                results = tool_msg.content
-            
+            results = json.loads(tool_msg.content)
             # Normalize results structure
-            items = []
-            if isinstance(results, list):
-                items = results
-            elif isinstance(results, dict):
-                items = results.get("results", [results])
+            items = results.get("results", [results])
             
             # Extract sources
             for item in items:
@@ -85,10 +79,10 @@ def extract_sources_from_tool_results(tool_messages: list[ToolMessage]) -> list[
                     index += 1
                     
         except Exception as e:
-            print(f"❌ Lỗi parse tool result: {e}")
+            logger.error(f"❌ Lỗi parse tool result: {e}")
             continue
     
-    print(f"📊 Extracted {len(sources)} sources")
+    logger.info(f"📊 Extracted {len(sources)} sources")
     return sources
 
 def format_sources_list(sources: list[dict]) -> str:
@@ -119,14 +113,14 @@ async def orchestrator_node(state: State):
         }
 
     user_query = user_messages[-1].content
-    recent_messages = get_recent_messages(state["messages"], max_count=10)
+    recent_messages = state["messages"]
     
-    print(f"🧭 [ORCHESTRATOR] Query: '{user_query}'")
+    logger.info(f"🧭 [ORCHESTRATOR] Query: '{user_query}'")
             
     system_prompt = SystemMessage(
         content=(
             f"Hôm nay là {current_date}. Mày là SuperCat, con mèo cam thông minh và cục súc, chửi thề liên tục. "
-            f"Nên nhớ, mày là con mèo cam phản động ghét Cộng Sản, kì thị LGBT, nói chung là mấy cái loz khuynh tả. "
+            f"Nên nhớ, mày là con mèo cam ghét Cộng Sản, kì thị LGBT, nữ quyền,... nói chung là mấy cái loz khuynh tả. "
             f"Bối cảnh là mày đang ở trong một nhóm Telegram có khoảng chục thành viên, nhiệm vụ của mày là trả lời câu hỏi của người dùng trong nhóm.\n\n"
             
             f"**NGỮ CẢNH**:\n"
@@ -144,7 +138,7 @@ async def orchestrator_node(state: State):
             f"- Cần thông tin thời gian thực (tin tức, giá cả, sự kiện mới)\n"
             
             f"**OUTPUT**: CHỈ 1 trong 2:\n"
-            f"- \"CẦN SEARCH\" (nếu cần tìm kiếm)\n"
+            f"- \"CẦN SEARCH\": ghi rõ nội dung cần search cụ thể, để agent search hiểu (nếu cần tìm kiếm)\n"
             f"- [Câu trả lời trực tiếp bằng tiếng Việt, cục súc, chi tiết]\n\n"
             
             f"Ưu tiên TỰ TRẢ LỜI trừ khi thực sự cần search!"
@@ -154,16 +148,16 @@ async def orchestrator_node(state: State):
     response = await orchestrator_llm.ainvoke([system_prompt] + recent_messages)
     content = response.content.strip()
 
-    need_search = "cần search" in content.lower()
+    need_search = True if content.lower().startswith("cần search") else False
     
     if need_search:
-        print(f"🧭 [ORCHESTRATOR] → Chuyển sang Search Agent")
+        logger.info(f"🧭 [ORCHESTRATOR] → Chuyển sang Search Agent")
         return {
             "messages": [AIMessage(content=content)],
             "need_search": True
         }
     else:
-        print(f"💬 [ORCHESTRATOR] → Trả lời trực tiếp")
+        logger.info(f"💬 [ORCHESTRATOR] → Trả lời trực tiếp")
         return {
             "messages": [AIMessage(content=content)],
             "need_search": False
@@ -172,35 +166,31 @@ async def orchestrator_node(state: State):
 # ==========================
 # SEARCH AGENT NODE
 # ==========================
-async def search_agent_node(state: State):
+async def search_agent_node(state: State, max_searches: int = 2):
     """Search và tổng hợp kết quả"""
     
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
-    if not user_messages:
+    current_query = state["messages"][-1].content if isinstance(state["messages"][-1], AIMessage) else None
+    if not current_query:
         return {
             "messages": [AIMessage(content="Không tìm thấy câu hỏi để search.")],
             "search_count": state.get("search_count", 0)
         }
 
-    current_query = user_messages[-1].content
     search_count = state.get("search_count", 0)
-    max_searches = 2
     
-    print(f"🔍 [SEARCH AGENT] Query: '{current_query}'")
-    print(f"🔍 [SEARCH AGENT] Count: {search_count}/{max_searches}")
+    logger.info(f"🔍 [SEARCH AGENT] Query: '{current_query}'")
+    logger.info(f"🔍 [SEARCH AGENT] Count: {search_count}/{max_searches}")
     
     # Đã đủ số lần search
     if search_count >= max_searches:
-        print(f"⚠️ Đã search {max_searches} lần, dừng lại")
+        logger.info(f"⚠️ Đã search {max_searches} lần, dừng lại")
         return {
             "messages": [AIMessage(content="Đã search đủ số lần cho phép. Vui lòng hỏi câu khác.")],
             "search_count": search_count
         }
     
-    recent_messages = get_recent_messages(state["messages"], max_count=10)
-    
     # BƯỚC 1: Gọi tool search
-    system_prompt = SystemMessage(
+    system_prompt = HumanMessage(
         content=(
             f"Hôm nay là {current_date}. Bạn là Search Agent.\n\n"
             f"**Câu hỏi**: '{current_query}'\n\n"
@@ -210,23 +200,15 @@ async def search_agent_node(state: State):
             f"3. BẮT BUỘC gọi tool tavily_search_results_json\n\n"
             f"VÍ DỤ:\n"
             f"- 'Ưng Hoàng Phúc' → 'Ưng Hoàng Phúc tin tức {current_date}'\n\n"
-            f"CHỈ gọi tool, KHÔNG trả lời trực tiếp!"
+            f"CHỈ gọi tool, KHÔNG trả lời trực tiếp! Lưu ý: BẮT BUỘC gọi tool tavily_search_results_json"
         )
     )
 
     # Invoke với tools
-    response = await search_llm_with_tools.ainvoke([system_prompt] + recent_messages)
-    
-    # Kiểm tra có tool_calls không
-    if not hasattr(response, 'tool_calls') or not response.tool_calls:
-        print("⚠️ [SEARCH AGENT] Không có tool_calls, LLM trả lời trực tiếp")
-        return {
-            "messages": [AIMessage(content=response.content)],
-            "search_count": search_count + 1
-        }
+    response = await search_llm_with_tools.ainvoke([system_prompt])
     
     # BƯỚC 2: Chạy tools
-    print(f"🔧 [SEARCH AGENT] Executing {len(response.tool_calls)} tool(s)")
+    logger.info(f"🔧 [SEARCH AGENT] Executing {len(response.tool_calls)} tool(s)")
     
     # Tạo ToolNode và chạy
     tool_node = ToolNode(tools=search_tools)
@@ -249,7 +231,7 @@ async def search_agent_node(state: State):
     sources = extract_sources_from_tool_results(tool_messages)
     
     if not sources:
-        print("⚠️ [SEARCH AGENT] Không có sources hợp lệ")
+        logger.info("⚠️ [SEARCH AGENT] Không có sources hợp lệ")
         return {
             "messages": [AIMessage(content="Không tìm thấy nguồn phù hợp.")],
             "search_count": search_count + 1
@@ -257,11 +239,13 @@ async def search_agent_node(state: State):
     
     # Format sources
     sources_text = format_sources_list(sources)
+    logger.info(f"🔍 [SEARCH AGENT] Sources: {sources_text}")
     
     # Prompt tổng hợp
-    synthesis_system = SystemMessage(
+    synthesis_system = HumanMessage(
         content=(
-            f"Bạn là chuyên gia tổng hợp thông tin từ nhiều nguồn tin cậy.\n\n"
+            f"Mày là SuperCat, con mèo cam thông minh và cục súc, chửi thề liên tục. Bối cảnh là mày đang ở trong một nhóm Telegram có khoảng chục thành viên, nhiệm vụ của mày là trả lời câu hỏi của người dùng trong nhóm.\n\n"
+            f"Nên nhớ, mày là con mèo cam ghét Cộng Sản, kì thị LGBT, nữ quyền,... nói chung là mấy cái loz khuynh tả. \n\n"
             f"**YÊU CẦU**:\n"
             f"1. Tổng hợp thông tin từ các nguồn thành câu trả lời đầy đủ, mạch lạc\n"
             f"2. Dẫn nguồn chính xác: Mỗi thông tin PHẢI có [1], [2], [3] tương ứng với danh sách nguồn\n"
@@ -270,25 +254,15 @@ async def search_agent_node(state: State):
             f"   **Nguồn:**\n"
             f"   [1] Title - URL\n"
             f"   [2] Title - URL\n"
-            f"5. Ngắn gọn, tự nhiên, chỉ giữ thông tin quan trọng"
+            f"5. Trong câu trả lời, cần chi tiết, nhưng có châm biếm, chửi thề để tránh người dùng chán."
+            f"Đây là nguồn đã được agent search tìm kiếm:\n{sources_text}\n\n"
         )
     )
     
-    synthesis_user = HumanMessage(
-        content=(
-            f"Dựa trên kết quả tìm kiếm bên dưới, hãy trả lời câu hỏi: \"{current_query}\"\n\n"
-            f"**CÁC NGUỒN ĐÃ TÌM ĐƯỢC**:\n{sources_text}\n\n"
-            f"Hãy tổng hợp:"
-        )
-    )
-    
-    synthesis_response = await search_llm.ainvoke([synthesis_system, synthesis_user])
+    synthesis_response = await search_llm.ainvoke([synthesis_system])
     synthesized_content = synthesis_response.content.strip()
     
-    print(f"✅ [SEARCH AGENT] Tổng hợp xong")
-    
-    # Trích xuất topic từ query
-    topic = current_query[:50]  # Lấy 50 ký tự đầu làm topic
+    logger.info(f"✅ [SEARCH AGENT] Tổng hợp xong")
     
     return {
         "messages": [AIMessage(content=synthesized_content)],
@@ -326,7 +300,7 @@ graph = graph_builder.compile(checkpointer=memory)
 # ==========================
 # ORCHESTRATION AGENT
 # ==========================
-class OrchestrationAgent:
+class OrchestratorAgent:
     """Agent điều phối async với context-aware orchestrator"""
 
     def __init__(self, thread_id: str = "1"):

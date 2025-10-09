@@ -11,11 +11,11 @@ from telegram.ext import (
 import logging
 from utils.constants import BotMessages, LogMessages
 from utils.exceptions import HandlerError
-from agents.orchestration import OrchestrationAgent
+from agents.orchestration import OrchestratorAgent
 
 logger = logging.getLogger(__name__)
 
-orchestration_agent = OrchestrationAgent()
+orchestration_agent = OrchestratorAgent()
 
 class BotHandlers:
     """Bot command and message handlers."""
